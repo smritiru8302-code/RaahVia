@@ -1,162 +1,617 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, Dimensions } from 'react-native'; 
-import { Pedometer, DeviceMotion, Magnetometer, Gyroscope } from 'expo-sensors';
+import {
+  View,
+  StyleSheet,
+  Image,
+  Text,
+  TouchableOpacity,
+  SafeAreaView,
+  StatusBar,
+  Platform,
+  Dimensions,
+  ScrollView,
+} from 'react-native';
+import Svg, { Polyline, Polygon, Circle } from 'react-native-svg';
+import {
+  Accelerometer,
+  Gyroscope,
+  Magnetometer,
+  Pedometer,
+} from 'expo-sensors';
 import * as Speech from 'expo-speech';
-import Svg, { Line, Circle } from 'react-native-svg';
-import { Navigation as NavIcon } from 'lucide-react-native';
-
-// --- ADDED THIS LINE HERE ---
-import Slider from '@react-native-community/slider'; 
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 const { width, height } = Dimensions.get('window');
 
-const STEP_TO_M = 0.762; 
-const SCALE_FACTOR = 45;
-
-export default function MapScreen({ data }) {
-  const [steps, setSteps] = useState(0);
+export default function MapScreen({ route }) {
+  const { data } = route.params;
   const [heading, setHeading] = useState(0);
-  const [hasSensors, setHasSensors] = useState(true); // Track sensor availability
-  
-  const startX = width / 2;
-  const startY = height * 0.65;
+  const [userSteps, setUserSteps] = useState(0);
+  const [accelerometerData, setAccelerometerData] = useState({ x: 0, y: 0, z: 0 });
+  const [isNavigating, setIsNavigating] = useState(true);
+  const [hasArrived, setHasArrived] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [svgDimensions, setSvgDimensions] = useState({ width: 0, height: 0 });
 
-  const targetX = startX + (data?.targetCoord?.x * SCALE_FACTOR * 10);
-  const targetY = startY - (data?.targetCoord?.y * SCALE_FACTOR * 10);
+  // Parse path points from string to array
+  const parsePathPoints = (pointsString) => {
+    return pointsString.split(' ').map(point => {
+      const [x, y] = point.split(',').map(Number);
+      return { x, y };
+    });
+  };
 
-  const [currentPos, setCurrentPos] = useState({ x: startX, y: startY });
+  const pathPoints = data?.pathPoints ? parsePathPoints(data.pathPoints) : [];
+  const startPoint = data?.startCoord || { x: 50, y: 95 };
+  const endPoint = data?.targetCoord || { x: 50, y: 20 };
 
-  useEffect(() => {
-    // --- SAMSUNG A12 SAFETY CHECK ---
-    const checkHardware = async () => {
-      const isCompassAvailable = await Magnetometer.isAvailableAsync();
-      const isGyroAvailable = await Gyroscope.isAvailableAsync();
-      if (!isCompassAvailable || !isGyroAvailable) {
-        setHasSensors(false);
-        console.log("Hardware sensors not found. Map rotation disabled.");
-      }
-    };
-    checkHardware();
-
-    if (data) {
-      Speech.speak(`Navigating to ${data.title}. ${data.voiceGuidance}`);
+  // Calculate current position based on steps
+  const calculateCurrentPosition = () => {
+    if (pathPoints.length < 2 || userSteps >= data.maxSteps) {
+      return endPoint;
     }
 
-    const pedSub = Pedometer.watchStepCount(result => {
-      setSteps(result.steps);
-      const rad = (heading * Math.PI) / 180;
-      setCurrentPos(prev => ({
-        x: prev.x + (STEP_TO_M * Math.sin(rad) * SCALE_FACTOR),
-        y: prev.y - (STEP_TO_M * Math.cos(rad) * SCALE_FACTOR)
-      }));
+    const totalDistance = data.distanceInMeters;
+    const distancePerStep = totalDistance / data.maxSteps;
+    const currentDistance = userSteps * distancePerStep;
 
-      if (result.steps > 0 && result.steps % 20 === 0) {
-        Speech.speak(`${Math.floor(result.steps * STEP_TO_M)} meters covered.`);
+    // Find which segment we're on
+    let accumulatedDistance = 0;
+    for (let i = 0; i < pathPoints.length - 1; i++) {
+      const p1 = pathPoints[i];
+      const p2 = pathPoints[i + 1];
+      
+      // Calculate distance between points (assuming 100 units = total map)
+      const segmentDistance = Math.sqrt(
+        Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
+      );
+      
+      if (accumulatedDistance + segmentDistance >= currentDistance) {
+        // We're on this segment
+        const ratio = (currentDistance - accumulatedDistance) / segmentDistance;
+        return {
+          x: p1.x + (p2.x - p1.x) * ratio,
+          y: p1.y + (p2.y - p1.y) * ratio,
+        };
+      }
+      accumulatedDistance += segmentDistance;
+    }
+    
+    return endPoint;
+  };
+
+  const currentPosition = calculateCurrentPosition();
+
+  // Handle SVG layout
+  const onSvgLayout = (event) => {
+    const { width, height } = event.nativeEvent.layout;
+    setSvgDimensions({ width, height });
+  };
+
+  // Sensor setup
+  useEffect(() => {
+    let isMounted = true;
+    let stepCount = 0;
+    let lastStepTime = Date.now();
+    const stepThreshold = 0.5; // Acceleration threshold for step detection
+
+    // Setup sensors
+    Accelerometer.setUpdateInterval(100);
+    Gyroscope.setUpdateInterval(100);
+    Magnetometer.setUpdateInterval(100);
+
+    const accelerometerSubscription = Accelerometer.addListener(data => {
+      if (!isMounted || isPaused || hasArrived) return;
+
+      // Simple step detection using acceleration magnitude
+      const magnitude = Math.sqrt(
+        data.x * data.x + data.y * data.y + data.z * data.z
+      );
+      
+      const currentTime = Date.now();
+      if (magnitude > stepThreshold && currentTime - lastStepTime > 300) {
+        // Detected a step
+        lastStepTime = currentTime;
+        if (isMounted) {
+          setUserSteps(prev => {
+            const newSteps = prev + 1;
+            
+            // Check if arrived
+            if (newSteps >= data.maxSteps) {
+              setHasArrived(true);
+              setIsNavigating(false);
+              Speech.speak(`You have arrived at ${data.title}`);
+            }
+            
+            return newSteps;
+          });
+        }
       }
     });
 
-    // Only listen to motion if hardware is capable
-    let motionSub = null;
-    if (hasSensors) {
-      motionSub = DeviceMotion.addListener(motion => {
-        if (motion.rotation) {
-          const deg = (motion.rotation.beta * 180) / Math.PI;
-          setHeading(Math.floor(deg));
-        }
-      });
-    }
+    const magnetometerSubscription = Magnetometer.addListener(data => {
+      if (!isMounted || isPaused) return;
+      
+      // Calculate heading from magnetometer
+      let angle = Math.atan2(data.y, data.x) * (180 / Math.PI);
+      angle = angle < 0 ? angle + 360 : angle;
+      
+      // Adjust for phone orientation (portrait)
+      angle = (angle + 360 - 90) % 360;
+      
+      if (isMounted) {
+        setHeading(angle);
+      }
+    });
+
+    // Gyroscope for rotation smoothing
+    const gyroscopeSubscription = Gyroscope.addListener(() => {
+      // Could be used for more accurate rotation tracking
+    });
+
+    // Start navigation voice guidance
+    Speech.speak(data.voiceGuidance || "Navigation started. Start walking.");
 
     return () => {
-      pedSub.remove();
-      if (motionSub) motionSub.remove();
+      isMounted = false;
+      accelerometerSubscription?.remove();
+      magnetometerSubscription?.remove();
+      gyroscopeSubscription?.remove();
       Speech.stop();
     };
-  }, [data, heading, hasSensors]); 
+  }, [isPaused, hasArrived]);
 
-  if (!data) return (
-    <View style={styles.loading}><Text>Waiting for destination data...</Text></View>
-  );
+  // Check if arrived
+  useEffect(() => {
+    if (userSteps >= data.maxSteps && !hasArrived) {
+      setHasArrived(true);
+      setIsNavigating(false);
+      Speech.speak(`You have arrived at ${data.title}`);
+    }
+  }, [userSteps, hasArrived]);
+
+  const handlePause = () => {
+    setIsPaused(!isPaused);
+    Speech.speak(isPaused ? "Navigation resumed" : "Navigation paused");
+  };
+
+  const handleStop = () => {
+    setIsNavigating(false);
+    Speech.speak("Navigation stopped");
+  };
+
+  const progressPercentage = Math.min((userSteps / data.maxSteps) * 100, 100);
 
   return (
-    <View style={styles.container}>
-      <View style={styles.topHeader}>
-        <Text style={styles.destName}>{data.title}</Text>
-        <Text style={styles.destSub}>{data.block} • {data.floor} Floor</Text>
-      </View>
-
-      <View style={styles.mapContainer}>
-        <Image source={data.image} style={styles.mapImage} resizeMode="contain" />
-        
-        <Svg height="100%" width="100%" style={StyleSheet.absoluteFill}>
-          <Line
-            x1={startX} y1={startY}
-            x2={targetX} y2={targetY}
-            stroke="#FF4757" strokeWidth="3" strokeDasharray="10, 6"
-          />
-          <Circle 
-            cx={targetX} cy={targetY} 
-            r="12" fill="#FF4757" stroke="#fff" strokeWidth="3"
-          />
-        </Svg>
-
-        <View style={[styles.userMarker, { 
-          left: currentPos.x - 15, 
-          top: currentPos.y - 15,
-          transform: [{ rotate: `${heading}deg` }] 
-        }]}>
-          <NavIcon color="#2E86DE" size={30} fill="#2E86DE" />
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={() => {}}>
+            <Ionicons name="arrow-back" size={24} color="#000" />
+          </TouchableOpacity>
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.headerTitle} numberOfLines={1}>{data.title}</Text>
+            <Text style={styles.headerSubtitle}>
+              {hasArrived ? 'Arrived!' : `${userSteps}/${data.maxSteps} steps • ${data.distanceInMeters}m`}
+            </Text>
+          </View>
+          <View style={styles.headerSpacer} />
         </View>
 
-        {/* --- MANUAL FALLBACK FOR SAMSUNG A12 --- */}
-        {!hasSensors && (
-          <View style={styles.manualRotationBox}>
-            <Text style={styles.sensorWarning}>No Compass Found: Use Slider to Rotate</Text>
-            <Slider
-              style={{width: 200, height: 40}}
-              minimumValue={0}
-              maximumValue={360}
-              minimumTrackTintColor="#6C5CE7"
-              maximumTrackTintColor="#000000"
-              onValueChange={(val) => setHeading(Math.floor(val))}
-            />
+        <ScrollView 
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.mapContainer}>
+            <View style={styles.mapWrapper} onLayout={onSvgLayout}>
+              <Image 
+                source={data.image} 
+                style={styles.mapImage} 
+                resizeMode="contain"
+              />
+              
+              <Svg
+                width={svgDimensions.width || '100%'}
+                height={svgDimensions.height || '100%'}
+                viewBox="0 0 100 100"
+                style={styles.svgOverlay}
+              >
+                {/* Red dotted path */}
+                <Polyline
+                  points={data.pathPoints || "50,95 50,20"}
+                  fill="none"
+                  stroke="red"
+                  strokeWidth="2"
+                  strokeDasharray="4,4"
+                />
+
+                {/* Start point (Blue dot) */}
+                <Circle
+                  cx={startPoint.x}
+                  cy={startPoint.y}
+                  r="2"
+                  fill="#4A90E2"
+                  stroke="white"
+                  strokeWidth="1"
+                />
+
+                {/* End point (Green dot) */}
+                <Circle
+                  cx={endPoint.x}
+                  cy={endPoint.y}
+                  r="2"
+                  fill="#50C878"
+                  stroke="white"
+                  strokeWidth="1"
+                />
+
+                {/* User arrow */}
+                <Polygon
+                  points="0,-2 -2,2 0,1 2,2"
+                  fill="#FF6B6B"
+                  stroke="white"
+                  strokeWidth="0.5"
+                  transform={`
+                    translate(${currentPosition.x}, ${currentPosition.y})
+                    rotate(${heading})
+                  `}
+                />
+              </Svg>
+            </View>
+
+            {/* Progress Bar */}
+            <View style={styles.progressContainer}>
+              <View style={styles.progressBar}>
+                <View 
+                  style={[
+                    styles.progressFill,
+                    { width: `${progressPercentage}%` }
+                  ]} 
+                />
+              </View>
+              <Text style={styles.progressText}>
+                {Math.round(progressPercentage)}% Complete
+              </Text>
+            </View>
+          </View>
+
+          {/* Stats Container */}
+          <View style={styles.statsContainer}>
+            <View style={styles.statItem}>
+              <View style={[styles.statIcon, { backgroundColor: '#E8F4FD' }]}>
+                <Ionicons name="walk" size={18} color="#4A90E2" />
+              </View>
+              <Text style={styles.statValue}>{userSteps}</Text>
+              <Text style={styles.statLabel}>Steps</Text>
+            </View>
+            
+            <View style={styles.statItem}>
+              <View style={[styles.statIcon, { backgroundColor: '#FFE8E8' }]}>
+                <Ionicons name="compass" size={18} color="#FF6B6B" />
+              </View>
+              <Text style={styles.statValue}>{Math.round(heading)}°</Text>
+              <Text style={styles.statLabel}>Heading</Text>
+            </View>
+            
+            <View style={styles.statItem}>
+              <View style={[styles.statIcon, { backgroundColor: '#E8F8F0' }]}>
+                <MaterialCommunityIcons name="target" size={18} color="#50C878" />
+              </View>
+              <Text style={styles.statValue}>
+                {data.distanceInMeters - (userSteps * (data.distanceInMeters / data.maxSteps)).toFixed(1)}m
+              </Text>
+              <Text style={styles.statLabel}>Remaining</Text>
+            </View>
+          </View>
+
+          {/* Controls */}
+          <View style={styles.controls}>
+            <TouchableOpacity 
+              style={[styles.controlButton, isPaused ? styles.resumeButton : styles.pauseButton]}
+              onPress={handlePause}
+            >
+              <Ionicons 
+                name={isPaused ? "play" : "pause"} 
+                size={22} 
+                color={isPaused ? "#4A90E2" : "#FFA500"} 
+              />
+              <Text style={[
+                styles.controlButtonText,
+                { color: isPaused ? "#4A90E2" : "#FFA500" }
+              ]}>
+                {isPaused ? "Resume" : "Pause"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={[styles.controlButton, styles.stopButton]}
+              onPress={handleStop}
+            >
+              <Ionicons name="stop" size={22} color="#FF6B6B" />
+              <Text style={[styles.controlButtonText, { color: "#FF6B6B" }]}>
+                Stop
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Instructions */}
+          <View style={styles.instructions}>
+            <MaterialCommunityIcons name="information" size={20} color="#666" />
+            <Text style={styles.instructionsText}>
+              Hold your phone straight and walk normally. The arrow will guide you along the path.
+            </Text>
+          </View>
+
+          {/* Bottom padding */}
+          <View style={{ height: 20 }} />
+        </ScrollView>
+
+        {/* Arrived Overlay */}
+        {hasArrived && (
+          <View style={styles.arrivedOverlay}>
+            <View style={styles.arrivedContent}>
+              <View style={styles.arrivedIconContainer}>
+                <Ionicons name="checkmark-circle" size={50} color="#50C878" />
+              </View>
+              <Text style={styles.arrivedTitle}>You've Arrived!</Text>
+              <Text style={styles.arrivedText}>
+                You have reached {data.title}
+              </Text>
+              <TouchableOpacity 
+                style={styles.arrivedButton}
+                onPress={() => {}}
+              >
+                <Text style={styles.arrivedButtonText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </View>
-
-      <View style={styles.dataFooter}>
-        <View style={styles.statLine}>
-          <Text style={styles.statLabel}>Distance</Text>
-          <Text style={styles.statValue}>{(steps * STEP_TO_M).toFixed(1)}m</Text>
-        </View>
-        <View style={styles.separator} />
-        <View style={styles.statLine}>
-          <Text style={styles.statLabel}>Steps</Text>
-          <Text style={styles.statValue}>{steps}</Text>
-        </View>
-        <View style={styles.separator} />
-        <View style={styles.statLine}>
-          <Text style={styles.statLabel}>Heading</Text>
-          <Text style={styles.statValue}>{heading}°</Text>
-        </View>
-      </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  topHeader: { padding: 20, paddingTop: 50, backgroundColor: '#6C5CE7', borderBottomLeftRadius: 30, borderBottomRightRadius: 30, elevation: 8 },
-  destName: { color: '#fff', fontSize: 22 },
-  destSub: { color: '#DCDDE1', fontSize: 14, marginTop: 4 },
-  mapContainer: { flex: 1, backgroundColor: '#f9f9f9', overflow: 'hidden' },
-  mapImage: { width: '100%', height: '100%', opacity: 0.3 },
-  userMarker: { position: 'absolute', width: 30, height: 30, zIndex: 10 },
-  dataFooter: { flexDirection: 'row', backgroundColor: '#2F3542', margin: 20, padding: 20, borderRadius: 20, justifyContent: 'space-around', alignItems: 'center', position: 'absolute', bottom: 80, left: 10, right: 10, elevation: 10 },
-  statLine: { alignItems: 'center' },
-  statLabel: { fontSize: 10, color: '#A4B0BE', textTransform: 'uppercase', marginBottom: 5 },
-  statValue: { fontSize: 20, color: '#fff' },
-  separator: { width: 1, height: 30, backgroundColor: '#57606F' },
-  manualRotationBox: { position: 'absolute', top: 20, alignSelf: 'center', backgroundColor: 'rgba(255,255,255,0.9)', padding: 10, borderRadius: 15, alignItems: 'center', borderWidth: 1, borderColor: '#ddd' },
-  sensorWarning: { fontSize: 10, color: '#FF4757', marginBottom: 5 }
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  container: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'white',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 10 : 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+    minHeight: 60,
+  },
+  backButton: {
+    padding: 8,
+    marginRight: 8,
+  },
+  headerTextContainer: {
+    flex: 1,
+    alignItems: 'center',
+    marginHorizontal: 8,
+  },
+  headerSpacer: {
+    width: 40,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000000',
+    textAlign: 'center',
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 20,
+  },
+  mapContainer: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  mapWrapper: {
+    width: '100%',
+    aspectRatio: 4/3,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  mapImage: {
+    width: '100%',
+    height: '100%',
+  },
+  svgOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  progressContainer: {
+    marginTop: 16,
+  },
+  progressBar: {
+    height: 6,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#4A90E2',
+    borderRadius: 3,
+  },
+  progressText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  statItem: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: 'white',
+    padding: 12,
+    borderRadius: 10,
+    marginHorizontal: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  statIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  statValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+  controls: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 16,
+    gap: 12,
+  },
+  controlButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 10,
+    flex: 1,
+    borderWidth: 1,
+  },
+  pauseButton: {
+    backgroundColor: '#FFF4E6',
+    borderColor: '#FFA500',
+  },
+  resumeButton: {
+    backgroundColor: '#E8F4FD',
+    borderColor: '#4A90E2',
+  },
+  stopButton: {
+    backgroundColor: '#FFE8E8',
+    borderColor: '#FF6B6B',
+  },
+  controlButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  instructions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10,
+  },
+  instructionsText: {
+    fontSize: 13,
+    color: '#666',
+    marginLeft: 10,
+    flex: 1,
+    lineHeight: 18,
+  },
+  arrivedOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  arrivedContent: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 320,
+  },
+  arrivedIconContainer: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: '#F0F9F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  arrivedTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginBottom: 8,
+  },
+  arrivedText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  arrivedButton: {
+    backgroundColor: '#000000',
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 10,
+    width: '100%',
+  },
+  arrivedButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
 });

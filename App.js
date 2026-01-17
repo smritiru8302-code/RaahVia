@@ -40,7 +40,7 @@ export default function App() {
               if (navigationParams?.targetData) {
                 navigateTo('MapScreen', navigationParams.targetData);
               } else {
-                navigateTo('FloorSelection', { targetZone: scannedData }); 
+                navigateTo('FloorSelection',  scannedData ); 
               }
             }} 
           />

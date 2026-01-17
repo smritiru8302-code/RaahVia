@@ -22,24 +22,29 @@ export default function QRScanner({ onScanSuccess }) {
 
     let locationName = "";
     let targetZone = "";
+    let area = "";
 
     // Mapping physical QR strings to App Data IDs
     switch (data) {
       case 'aud_entrance':
         locationName = "Auditorium Entrance";
         targetZone = "auditorium";
+        area = "Auditorium Indoor Navigation";
         break;
       case 'pharm_g_entrance':
         locationName = "Pharmacy Ground Floor";
         targetZone = "pharm_g";
+        area = "Pharmacy Ground Floor Indoor Navigation";
         break;
       case 'pharm_1_stairs':
         locationName = "Pharmacy 1st Floor";
         targetZone = "pharm_1";
+        area = "Pharmacy 1st Floor Indoor Navigation";
         break;
       case 'pharm_2_elevator':
         locationName = "Pharmacy 2nd Floor";
         targetZone = "pharm_2";
+        area = "Pharmacy 2nd Floor Indoor Navigation";
         break;
       default:
         locationName = "Unknown SBU Location";
@@ -47,12 +52,15 @@ export default function QRScanner({ onScanSuccess }) {
 
     if (locationName !== "Unknown SBU Location") {
       if (onScanSuccess) {
-        // Passing data to the next screen to UNLOCK buttons
+        // Passing ALL the data to the next screen
         onScanSuccess({ 
           id: data, 
           name: locationName, 
           targetZone: targetZone,
-          isValid: true 
+          area: area,
+          isValid: true,
+          scannedLocation: data,
+          qrData: data
         });
       }
     } else {
