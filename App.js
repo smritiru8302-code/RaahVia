@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, SafeAreaView } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { NavigationContainer } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Screen Imports
+import LoginScreen from './screens/LoginScreen';
 import Dashboard from './screens/Dashboard';
 import { AiAssistant } from './screens/AiAssistant';
 import FloorSelection from './screens/FloorSelection';
@@ -11,8 +13,27 @@ import MapScreen from './screens/MapScreen';
 import QRScanner from './screens/QRScanner';
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState('Home');
+  const [currentScreen, setCurrentScreen] = useState('Login');
   const [navigationParams, setNavigationParams] = useState(null);
+  const [user, setUser] = useState(null);
+
+  // Check if user is already logged in
+  useEffect(() => {
+    checkLogin();
+  }, []);
+
+  const checkLogin = async () => {
+    try {
+      const token = await AsyncStorage.getItem('authToken');
+      const userData = await AsyncStorage.getItem('user');
+      if (token && userData) {
+        setUser(JSON.parse(userData));
+        setCurrentScreen('Home');
+      }
+    } catch (error) {
+      console.error('Error checking login:', error);
+    }
+  };
 
   // Centralized Navigation Logic
   const navigateTo = (screen, params = null) => {
@@ -20,7 +41,24 @@ export default function App() {
     setCurrentScreen(screen);
   };
 
+  const handleLoginSuccess = async (userData) => {
+    setUser(userData);
+    await AsyncStorage.setItem('user', JSON.stringify(userData));
+    setCurrentScreen('Home');
+  };
+
+  const handleLogout = async () => {
+    await AsyncStorage.removeItem('authToken');
+    await AsyncStorage.removeItem('user');
+    setUser(null);
+    setCurrentScreen('Login');
+  };
+
   const renderActiveScreen = () => {
+    if (!user) {
+      return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+    }
+
     switch (currentScreen) {
       case 'Home': 
         return <Dashboard onNavigate={navigateTo} />;
@@ -37,11 +75,9 @@ export default function App() {
         return (
           <QRScanner 
             onScanSuccess={(scannedData) => {
-              if (navigationParams?.targetData) {
-                navigateTo('MapScreen', navigationParams.targetData);
-              } else {
-                navigateTo('FloorSelection',  scannedData ); 
-              }
+              // QR scanner now returns complete location data
+              // Go directly to MapScreen with the data
+              navigateTo('MapScreen', scannedData);
             }} 
           />
         );
@@ -71,26 +107,33 @@ export default function App() {
         </View>
 
         {/* GLOBAL PERSISTENT NAVIGATION BAR */}
-        <View style={styles.navBar}>
-          <TouchableOpacity style={styles.navItem} onPress={() => setCurrentScreen('Home')}>
-            <Ionicons name="home" size={24} color={currentScreen === 'Home' ? '#000000' : '#999'} />
-            <Text style={[styles.navText, currentScreen === 'Home' && styles.activeText]}>Home</Text>
-          </TouchableOpacity>
+        {user && (
+          <View style={styles.navBar}>
+            <TouchableOpacity style={styles.navItem} onPress={() => setCurrentScreen('Home')}>
+              <Ionicons name="home" size={24} color={currentScreen === 'Home' ? '#000000' : '#999'} />
+              <Text style={[styles.navText, currentScreen === 'Home' && styles.activeText]}>Home</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.navItem} onPress={() => {
-            setNavigationParams(null); 
-            setCurrentScreen('QRScanner');
-          }}>
-            <View style={styles.scanButton}>
-              <MaterialCommunityIcons name="qrcode-scan" size={26} color="white" />
-            </View>
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.navItem} onPress={() => {
+              setNavigationParams(null); 
+              setCurrentScreen('QRScanner');
+            }}>
+              <View style={styles.scanButton}>
+                <MaterialCommunityIcons name="qrcode-scan" size={26} color="white" />
+              </View>
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.navItem} onPress={() => setCurrentScreen('ai')}>
-            <Ionicons name="sparkles" size={24} color={currentScreen === 'ai' ? '#000000' : '#999'} />
-            <Text style={[styles.navText, currentScreen === 'ai' && styles.activeText]}>AI Bot</Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity style={styles.navItem} onPress={() => setCurrentScreen('ai')}>
+              <Ionicons name="sparkles" size={24} color={currentScreen === 'ai' ? '#000000' : '#999'} />
+              <Text style={[styles.navText, currentScreen === 'ai' && styles.activeText]}>AI Bot</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.navItem} onPress={handleLogout}>
+              <Ionicons name="log-out" size={24} color="#999" />
+              <Text style={styles.navText}>Logout</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </SafeAreaView>
     </NavigationContainer>
   );

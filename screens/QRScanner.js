@@ -5,6 +5,38 @@ import { useIsFocused } from '@react-navigation/native';
 
 const { width } = Dimensions.get('window');
 
+// Location data for QR mapping
+const LOCATION_DATA = {
+  aud_entrance: {
+    id: 'aud_entrance',
+    title: 'Auditorium Entrance',
+    block: 'Auditorium',
+    floor: 'Ground',
+    image: require('../assets/auditorium_map.png'),
+    maxSteps: 42,
+    distanceInMeters: 32.0,
+    angle: 171,
+    targetCoord: { x: 50, y: 3.2 },
+    startCoord: { x: 50, y: 95 },
+    pathPoints: "50,95 50,3.2",
+    voiceGuidance: "You are at Auditorium Entrance. Walk straight ahead.",
+  },
+  pharm_g_entrance: {
+    id: 'pharm_g_entrance',
+    title: 'Pharmacy Ground Floor',
+    block: 'Pharmacy',
+    floor: 'Ground',
+    image: require('../assets/pharmacy_g.png'),
+    maxSteps: 35,
+    distanceInMeters: 28.0,
+    angle: 90,
+    targetCoord: { x: 90, y: 50 },
+    startCoord: { x: 10, y: 50 },
+    pathPoints: "10,50 90,50",
+    voiceGuidance: "You are at Pharmacy Ground Floor entrance.",
+  },
+};
+
 export default function QRScanner({ onScanSuccess }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
@@ -20,48 +52,13 @@ export default function QRScanner({ onScanSuccess }) {
     if (scanned) return;
     setScanned(true);
 
-    let locationName = "";
-    let targetZone = "";
-    let area = "";
+    // Look up location data from QR code
+    const locationData = LOCATION_DATA[data];
 
-    // Mapping physical QR strings to App Data IDs
-    switch (data) {
-      case 'aud_entrance':
-        locationName = "Auditorium Entrance";
-        targetZone = "auditorium";
-        area = "Auditorium Indoor Navigation";
-        break;
-      case 'pharm_g_entrance':
-        locationName = "Pharmacy Ground Floor";
-        targetZone = "pharm_g";
-        area = "Pharmacy Ground Floor Indoor Navigation";
-        break;
-      case 'pharm_1_stairs':
-        locationName = "Pharmacy 1st Floor";
-        targetZone = "pharm_1";
-        area = "Pharmacy 1st Floor Indoor Navigation";
-        break;
-      case 'pharm_2_elevator':
-        locationName = "Pharmacy 2nd Floor";
-        targetZone = "pharm_2";
-        area = "Pharmacy 2nd Floor Indoor Navigation";
-        break;
-      default:
-        locationName = "Unknown SBU Location";
-    }
-
-    if (locationName !== "Unknown SBU Location") {
+    if (locationData) {
       if (onScanSuccess) {
-        // Passing ALL the data to the next screen
-        onScanSuccess({ 
-          id: data, 
-          name: locationName, 
-          targetZone: targetZone,
-          area: area,
-          isValid: true,
-          scannedLocation: data,
-          qrData: data
-        });
+        // Pass complete location data
+        onScanSuccess(locationData);
       }
     } else {
       Alert.alert("Invalid QR", "Code not recognized by RaahVia.", [

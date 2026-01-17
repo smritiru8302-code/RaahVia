@@ -23,8 +23,9 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 const { width, height } = Dimensions.get('window');
 
-export default function MapScreen({ route }) {
-  const { data } = route.params;
+export default function MapScreen({ route, data: propData }) {
+  // Use route.params if available (React Navigation), otherwise use propData
+  const data = route?.params?.data || propData;
   const [heading, setHeading] = useState(0);
   const [userSteps, setUserSteps] = useState(0);
   const [accelerometerData, setAccelerometerData] = useState({ x: 0, y: 0, z: 0 });
@@ -32,6 +33,7 @@ export default function MapScreen({ route }) {
   const [hasArrived, setHasArrived] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [svgDimensions, setSvgDimensions] = useState({ width: 0, height: 0 });
+  const [useManualSteps, setUseManualSteps] = useState(false); // Toggle between auto and manual step detection
 
   // Parse path points from string to array
   const parsePathPoints = (pointsString) => {
@@ -93,7 +95,9 @@ export default function MapScreen({ route }) {
     let isMounted = true;
     let stepCount = 0;
     let lastStepTime = Date.now();
-    const stepThreshold = 0.5; // Acceleration threshold for step detection
+    // Increased threshold from 0.5 to 2.5 to prevent false step detection from vibrations
+    // Only real walking movements will trigger steps now
+    const stepThreshold = 2.5;
 
     // Setup sensors
     Accelerometer.setUpdateInterval(100);
@@ -101,7 +105,7 @@ export default function MapScreen({ route }) {
     Magnetometer.setUpdateInterval(100);
 
     const accelerometerSubscription = Accelerometer.addListener(data => {
-      if (!isMounted || isPaused || hasArrived) return;
+      if (!isMounted || isPaused || hasArrived || useManualSteps) return; // Skip if using manual mode
 
       // Simple step detection using acceleration magnitude
       const magnitude = Math.sqrt(
@@ -179,6 +183,46 @@ export default function MapScreen({ route }) {
     setIsNavigating(false);
     Speech.speak("Navigation stopped");
   };
+
+  const handleManualStep = () => {
+    setUserSteps(prev => {
+      const newSteps = prev + 1;
+      
+      // Check if arrived
+      if (newSteps >= data.maxSteps) {
+        setHasArrived(true);
+        setIsNavigating(false);
+        Speech.speak(`You have arrived at ${data.title}`);
+      }
+      
+      return newSteps;
+    });
+  };
+
+  const toggleStepMode = () => {
+    setUseManualSteps(!useManualSteps);
+    Speech.speak(useManualSteps ? "Switched to automatic step detection" : "Switched to manual step mode");
+  };
+
+  // Safety check for missing data
+  if (!data) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Navigation Error</Text>
+          </View>
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+            <Ionicons name="alert-circle" size={60} color="#FF6B6B" />
+            <Text style={{ fontSize: 18, fontWeight: 'bold', marginTop: 16 }}>No Location Data</Text>
+            <Text style={{ fontSize: 14, color: '#666', textAlign: 'center', marginTop: 10 }}>
+              Please scan a QR code or select a location to start navigation.
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const progressPercentage = Math.min((userSteps / data.maxSteps) * 100, 100);
 
@@ -335,6 +379,37 @@ export default function MapScreen({ route }) {
               </Text>
             </TouchableOpacity>
           </View>
+
+          {/* Step Mode Controls */}
+          <View style={styles.modeContainer}>
+            <TouchableOpacity 
+              style={[styles.modeButton, useManualSteps && styles.modeButtonActive]}
+              onPress={toggleStepMode}
+            >
+              <MaterialCommunityIcons 
+                name={useManualSteps ? "hand-okay" : "walk"} 
+                size={20} 
+                color={useManualSteps ? "#FFA500" : "#666"} 
+              />
+              <Text style={[
+                styles.modeButtonText,
+                useManualSteps && styles.modeButtonTextActive
+              ]}>
+                {useManualSteps ? "Manual Mode" : "Auto Mode"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Manual Step Button (only show in manual mode) */}
+          {useManualSteps && (
+            <TouchableOpacity 
+              style={styles.manualStepButton}
+              onPress={handleManualStep}
+            >
+              <MaterialCommunityIcons name="plus-circle" size={30} color="white" />
+              <Text style={styles.manualStepButtonText}>Add Step</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Instructions */}
           <View style={styles.instructions}>
@@ -613,5 +688,48 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  modeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  modeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 2,
+    borderColor: '#ddd',
+  },
+  modeButtonActive: {
+    backgroundColor: '#FFF4E6',
+    borderColor: '#FFA500',
+  },
+  modeButtonText: {
+    marginLeft: 8,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+  },
+  modeButtonTextActive: {
+    color: '#FFA500',
+  },
+  manualStepButton: {
+    backgroundColor: '#4A90E2',
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    flexDirection: 'row',
+  },
+  manualStepButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
   },
 });
